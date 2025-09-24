@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { parse,  } from 'papaparse';
 import dbConnect from '@/lib/mongodb';
 import Books from '@/models/books';
-import { Schema } from 'mongoose';
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,27 +17,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Read the file content
-    const fileContent = await file.text();
+    // Read the chunk content
+    const chunkContent = await file.text();
+    const chunkData = JSON.parse(chunkContent);
 
-    // Parse CSV content
-    const parseFile = parse(fileContent, {
-      header: true,
-      skipEmptyLines: true
-    });
-
-    console.log("CSV Headers:", parseFile.meta.fields);
-    console.log("First row of data:", parseFile.data[0]);
-
-    if (!parseFile.data || parseFile.data.length === 0) {
+    if (!Array.isArray(chunkData) || chunkData.length === 0) {
       return NextResponse.json(
-        { error: 'Invalid CSV file or empty data' },
+        { error: 'Invalid chunk data or empty chunk' },
         { status: 400 }
       );
     }
     
-    // Create new CSV document in MongoDB
-    const csvDoc = await Books.insertMany(parseFile.data);
+    // Create new documents in MongoDB for this chunk
+    const csvDoc = await Books.insertMany(chunkData);
 
     return NextResponse.json({
       message: 'File uploaded successfully',

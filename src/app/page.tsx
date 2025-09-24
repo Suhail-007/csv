@@ -1,17 +1,12 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
-import Conditional from '../components/ui/conditional';
+import { useState, useRef, useEffect } from 'react';
+import ProgressBar from '../components/ui/progress-bar';
+import EditModal from '../components/pages/home/components/edit-modal';
 import { SortConfig, createQueryFilter } from '@/lib/getData';
-
-interface BooksData {
-  books: any[];
-  pagination: {
-    currentPage: number;
-    totalPages: number;
-    totalItems: number;
-  };
-}
+import { parse } from 'papaparse';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import Conditional from '../components/ui/conditional';
 
 type Pagination = {
   limit: number;
@@ -20,55 +15,110 @@ type Pagination = {
   totalPages: number;
 };
 
-const headers = ['Title', 'Author', 'Genre', 'PublishedYear', 'ISBN'];
+type UploadProgress = {
+  processed: number;
+  total: number;
+};
+
+export type Book = {
+  _id: string;
+  Title: string;
+  Author: string;
+  Genre: string;
+  PublishedYear: number;
+  ISBN: string;
+};
+
+type Data = {
+  data: Book[];
+  status: number;
+  pagination: Pagination;
+  message: string;
+};
+
+const fetchData = async (page: number, limit: number, sort: SortConfig) => {
+  try {
+    const params = createQueryFilter({ page: page, limit, ...sort });
+    const url = `/api/data${params ? params : ''}`;
+    const res = await fetch(url);
+    const data: Promise<Data> = await res.json();
+
+    return data;
+  } catch (err: unknown) {
+    console.error(err);
+  }
+};
+
+const headers = ['Title', 'Author', 'Genre', 'PublishedYear', 'ISBN', 'Action'];
 
 export default function Home() {
+  const [isUpdating, setIsUpdating] = useState(false);
+  const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress>({ processed: 0, total: 0 });
   const inputRef = useRef<null | HTMLInputElement>(null);
+  const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [isDeleteLoading, setIsDeleteLoading] = useState({
+    id: '',
+    isLoading: false,
+  });
 
-  const [booksData, setBooksData] = useState<BooksData | null>(null);
   const [pagination, setPagination] = useState<Pagination>({
     limit: 10,
-    page: 0,
+    page: 1,
     totalItems: 0,
     totalPages: 0,
   });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [sort, setSort] = useState<SortConfig>({
     publishedyear: 'asc',
-    author: 'asc',
+    // author: 'asc',
+  });
+  const [error, setError] = useState('');
+
+  const {
+    isLoading: loading,
+    error: fetchError,
+    data: booksData,
+  } = useQuery({
+    queryKey: ['books', pagination.page, pagination.limit, sort],
+    queryFn: () => fetchData(pagination.page, pagination.limit, sort),
   });
 
-  const fetchData = useCallback(
-    async (page: number) => {
-      try {
-        setLoading(true);
-        const params = createQueryFilter({ page: page, limit: pagination.limit, ...sort });
-        const url = `/api/data${params ? params : ''}`;
-        const res = await fetch(url);
-        const data = await res.json();
-        setBooksData(data?.data);
-        // setPagination({ ...data?.pagination, page });
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch data');
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [pagination.limit, sort]
-  );
-
   useEffect(() => {
-    fetchData(1);
-  }, [fetchData]);
+    if (booksData?.pagination) {
+      setPagination(booksData.pagination);
+    }
+  }, [booksData?.pagination]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) {
       setFile(e.target.files[0]);
-      setError('');
+    }
+  };
+
+  const handleSaveBook = async (updatedBook: Book) => {
+    try {
+      const response = await fetch(`/api/data?id=${updatedBook._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updatedBook),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update book');
+      }
+
+      // Invalidate and refetch the books query
+      await queryClient.invalidateQueries({ queryKey: ['books', pagination.page, pagination.limit, sort] });
+    } catch (error) {
+      console.error('Error updating book:', error);
+      setError('Failed to update book');
+    } finally {
+      setEditingBook(null);
+      setIsUpdating(false);
     }
   };
 
@@ -80,36 +130,90 @@ export default function Home() {
 
     setUploading(true);
     setError('');
+    setUploadProgress({ processed: 0, total: 0 });
 
-    const formData = new FormData();
-    formData.append('file', file);
+    // First, parse the file locally to get the total count and validate
+    const reader = new FileReader();
+    reader.onload = async event => {
+      try {
+        parse(event.target?.result as string, {
+          header: true,
+          skipEmptyLines: true,
+          complete: async results => {
+            const total = results.data.length;
+            setUploadProgress(prev => ({ ...prev, total }));
 
-    try {
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
+            // Now upload in chunks
+            const CHUNK_SIZE = 1000;
+            const chunks = [];
 
-      if (!response.ok) throw new Error('Upload failed');
+            for (let i = 0; i < results.data.length; i += CHUNK_SIZE) {
+              chunks.push(results.data.slice(i, i + CHUNK_SIZE));
+            }
 
-      if (inputRef.current) {
-        inputRef.current.value = ''
-      };
+            for (let i = 0; i < chunks.length; i++) {
+              const formData = new FormData();
+              const blob = new Blob([JSON.stringify(chunks[i])], {
+                type: 'application/json',
+              });
+              formData.append('file', blob, 'chunk.json');
+              // formData.append('chunkIndex', i.toString());
+              // formData.append('totalChunks', chunks.length.toString());
 
-      await fetchData(1);
-      setFile(null);
-    } catch (err) {
-      setError('Failed to upload file');
-      console.error(err);
-    } finally {
-      setUploading(false);
-    }
+              const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData,
+              });
+
+              if (!response.ok) throw new Error('Upload failed');
+
+              setUploadProgress(prev => ({
+                ...prev,
+                processed: Math.min((i + 1) * CHUNK_SIZE, total),
+              }));
+            }
+
+            if (inputRef.current) {
+              inputRef.current.value = '';
+            }
+
+            setFile(null);
+            setUploading(false);
+            queryClient.invalidateQueries({ queryKey: ['books', pagination.page, pagination.limit, sort] });
+          },
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to process file');
+        setUploading(false);
+      }
+    };
+
+    reader.readAsText(file);
   };
 
-  const logger = (data: any) => {
-    console.log(data);
+  const handleDelete = async (id: string) => {
+    try {
+      setIsDeleteLoading({
+        id,
+        isLoading: true,
+      });
+      const res = await fetch(`/api/data?id=${id}`, {
+        method: 'DELETE',
+      });
 
-    return null;
+      if (res.status === 200) {
+        alert('Book deleted successfully');
+      } else {
+        alert('Failed to delete book');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsDeleteLoading({
+        id: '',
+        isLoading: false,
+      });
+    }
   };
 
   return (
@@ -123,14 +227,23 @@ export default function Home() {
           <button
             onClick={handleUpload}
             disabled={uploading || !file}
-            className='px-4 py-2 bg-blue-500 rounded disabled:bg-gray-400'>
+            className='px-4 py-2 bg-blue-500 text-white rounded disabled:bg-gray-400'>
             {uploading ? 'Uploading...' : 'Upload CSV'}
           </button>
           {error && <p className='text-red-500 mt-2'>{error}</p>}
+          {uploading && uploadProgress.total > 0 && (
+            <ProgressBar progress={uploadProgress.processed} total={uploadProgress.total} />
+          )}
         </div>
 
         {/* Data Table */}
         <div className='overflow-x-auto'>
+          {!!fetchError && (
+            <p className='text-red-500 mt-2'>
+              {fetchError instanceof Error ? fetchError.message : 'Failed to fetch data'}
+            </p>
+          )}
+
           <table className='min-w-full border rounded-lg'>
             <thead className='bg-blue-500'>
               <tr>
@@ -139,18 +252,19 @@ export default function Home() {
                     key={index}
                     className='px-4 py-2 border cursor-pointer hover:bg-blue-600'
                     onClick={() => {
-                      if (header.toLowerCase() !== 'publishedyear' && header.toLowerCase() !== 'author') return;
-                      setSort(prev => ({
-                        ...prev,
-                        [header.toLowerCase()]: prev[header.toLowerCase()] === 'asc' ? 'desc' : 'asc',
-                      }));
+                      if (header.toLowerCase() !== 'publishedyear') return;
+
+                      setSort(prev => {
+                        return {
+                          ...prev,
+                          [header.toLowerCase()]: prev[header.toLowerCase()] === 'asc' ? 'desc' : 'asc',
+                        };
+                      });
                     }}>
-                    <div className='flex items-center justify-between'>
+                    <div className='flex items-center text-white justify-between'>
                       <span>{header}</span>
-                      {/* {logger(sort[header.toLowerCase()])} */}
-                      {logger(header.toLowerCase())}
-                      <Conditional condition={sort[header.toLowerCase()] === header.toLowerCase()}>
-                        <span className='ml-2'>{sort[header.toLowerCase()] === 'asc' ? '↑' : '↓'}</span>
+                      <Conditional condition={header.toLowerCase() === 'publishedyear'}>
+                        <span className='ml-2 text-red'>{sort.publishedyear === 'asc' ? '↑' : '↓'}</span>
                       </Conditional>
                     </div>
                   </th>
@@ -160,27 +274,49 @@ export default function Home() {
 
             <tbody>
               <Conditional condition={loading}>
-                {Array.from({ length: 10 }).map((_, rowIndex) => (
+                {Array.from({ length: 5 }).map((_, rowIndex) => (
                   <tr key={rowIndex} className='hover:bg-gray-50'>
                     {Array.from({ length: 5 }).map((_, colIndex) => (
-                      <td key={colIndex} className='px-4 py-4 border animate-pulse'></td>
+                      <td key={colIndex} className='px-4 py-4 border animate-pulse'>
+                        <div className='h-4 bg-gray-200 rounded-full animate-pulse'></div>
+                      </td>
                     ))}
                   </tr>
                 ))}
               </Conditional>
-              <Conditional condition={!loading && booksData?.books.length === 0}>
+              <Conditional condition={!loading && (booksData?.data?.length === 0 || !booksData)}>
                 <tr>
                   <td colSpan={headers.length} className='px-4 py-2 border text-white'>
                     No data found
                   </td>
                 </tr>
               </Conditional>
-              <Conditional condition={(booksData && booksData.books.length > 0 ? true : false) && !loading}>
-                {booksData?.books.map((row, rowIndex) => (
-                  <tr key={rowIndex} className='hover:bg-gray-700'>
+              <Conditional condition={(booksData && booksData?.data?.length > 0 ? true : false) && !loading}>
+                {booksData?.data?.map((row, rowIndex) => (
+                  <tr key={rowIndex} className='hover:bg-[#eee] dark:hover:bg-gray-600'>
                     {headers.map((header, colIndex) => (
                       <td key={colIndex} className='px-4 py-2 border'>
-                        {row[header]}
+                        {header === 'Action' ? (
+                          <div className='flex gap-2'>
+                            <button
+                              onClick={() => setEditingBook(row)}
+                              className='px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600'>
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDelete(row._id)}
+                              className='px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600'>
+                              <Conditional condition={isDeleteLoading.id === row._id && isDeleteLoading.isLoading}>
+                                Deleting...
+                              </Conditional>
+                              <Conditional condition={isDeleteLoading.id !== row._id}>
+                                Delete
+                              </Conditional>
+                            </button>
+                          </div>
+                        ) : (
+                          row[header as keyof Book]
+                        )}
                       </td>
                     ))}
                   </tr>
@@ -190,27 +326,39 @@ export default function Home() {
           </table>
 
           {/* Pagination */}
-          <Conditional condition={pagination?.totalPages > 1}>
+          <Conditional condition={!!booksData?.data?.length}>
             <div className='mt-4 flex justify-center gap-2'>
               <button
-                onClick={() => fetchData(pagination?.page - 1)}
+                onClick={() => setPagination(prev => ({ ...prev, page: prev.page - 1 }))}
                 disabled={pagination?.page === 1}
-                className='px-3 py-1 border bg-blue-900 text-white rounded disabled:bg-gray-900'>
+                className='px-3 py-1 border bg-blue-900 text-white rounded dark:disabled:bg-gray-400 disabled:bg-gray-900'>
                 Previous
               </button>
               <span className='px-3 py-1'>
                 Page {pagination?.page} of {pagination.totalPages}
               </span>
               <button
-                onClick={() => fetchData(pagination?.page + 1)}
+                onClick={() => setPagination(prev => ({ ...prev, page: prev.page + 1 }))}
                 disabled={pagination?.page === pagination.totalPages}
-                className='px-3 py-1 border bg-blue-900 text-white rounded disabled:bg-gray-900'>
+                className='px-3 py-1 border bg-blue-900 text-white rounded dark:disabled:bg-gray-400 disabled:bg-gray-900'>
                 Next
               </button>
             </div>
           </Conditional>
         </div>
       </div>
+
+      {/* Edit Modal */}
+      {editingBook && (
+        <EditModal
+          setIsLoading={setIsUpdating}
+          isLoading={isUpdating}
+          isOpen={!!editingBook}
+          onClose={() => setEditingBook(null)}
+          bookData={editingBook}
+          onSave={handleSaveBook}
+        />
+      )}
     </main>
   );
 }
