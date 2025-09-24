@@ -1,103 +1,216 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useCallback, useEffect, useRef } from 'react';
+import Conditional from '../components/ui/conditional';
+import { SortConfig, createQueryFilter } from '@/lib/getData';
+
+interface BooksData {
+  books: any[];
+  pagination: {
+    currentPage: number;
+    totalPages: number;
+    totalItems: number;
+  };
+}
+
+type Pagination = {
+  limit: number;
+  page: number;
+  totalItems: number;
+  totalPages: number;
+};
+
+const headers = ['Title', 'Author', 'Genre', 'PublishedYear', 'ISBN'];
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const inputRef = useRef<null | HTMLInputElement>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const [booksData, setBooksData] = useState<BooksData | null>(null);
+  const [pagination, setPagination] = useState<Pagination>({
+    limit: 10,
+    page: 0,
+    totalItems: 0,
+    totalPages: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [sort, setSort] = useState<SortConfig>({
+    publishedyear: 'asc',
+    author: 'asc',
+  });
+
+  const fetchData = useCallback(
+    async (page: number) => {
+      try {
+        setLoading(true);
+        const params = createQueryFilter({ page: page, limit: pagination.limit, ...sort });
+        const url = `/api/data${params ? params : ''}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        setBooksData(data?.data);
+        // setPagination({ ...data?.pagination, page });
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch data');
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [pagination.limit, sort]
+  );
+
+  useEffect(() => {
+    fetchData(1);
+  }, [fetchData]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) {
+      setFile(e.target.files[0]);
+      setError('');
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!file) {
+      setError('Please select a file');
+      return;
+    }
+
+    setUploading(true);
+    setError('');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Upload failed');
+
+      if (inputRef.current) {
+        inputRef.current.value = ''
+      };
+
+      await fetchData(1);
+      setFile(null);
+    } catch (err) {
+      setError('Failed to upload file');
+      console.error(err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const logger = (data: any) => {
+    console.log(data);
+
+    return null;
+  };
+
+  return (
+    <main className='min-h-screen p-8'>
+      <div className='max-w-6xl mx-auto'>
+        <h1 className='text-3xl font-bold mb-8'>CSV File Upload and Display</h1>
+
+        {/* Upload Section */}
+        <div className='mb-8 p-4 border rounded-lg'>
+          <input ref={inputRef} type='file' accept='.csv' onChange={handleFileChange} className='mb-4' />
+          <button
+            onClick={handleUpload}
+            disabled={uploading || !file}
+            className='px-4 py-2 bg-blue-500 rounded disabled:bg-gray-400'>
+            {uploading ? 'Uploading...' : 'Upload CSV'}
+          </button>
+          {error && <p className='text-red-500 mt-2'>{error}</p>}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+
+        {/* Data Table */}
+        <div className='overflow-x-auto'>
+          <table className='min-w-full border rounded-lg'>
+            <thead className='bg-blue-500'>
+              <tr>
+                {headers.map((header, index) => (
+                  <th
+                    key={index}
+                    className='px-4 py-2 border cursor-pointer hover:bg-blue-600'
+                    onClick={() => {
+                      if (header.toLowerCase() !== 'publishedyear' && header.toLowerCase() !== 'author') return;
+                      setSort(prev => ({
+                        ...prev,
+                        [header.toLowerCase()]: prev[header.toLowerCase()] === 'asc' ? 'desc' : 'asc',
+                      }));
+                    }}>
+                    <div className='flex items-center justify-between'>
+                      <span>{header}</span>
+                      {/* {logger(sort[header.toLowerCase()])} */}
+                      {logger(header.toLowerCase())}
+                      <Conditional condition={sort[header.toLowerCase()] === header.toLowerCase()}>
+                        <span className='ml-2'>{sort[header.toLowerCase()] === 'asc' ? '↑' : '↓'}</span>
+                      </Conditional>
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+
+            <tbody>
+              <Conditional condition={loading}>
+                {Array.from({ length: 10 }).map((_, rowIndex) => (
+                  <tr key={rowIndex} className='hover:bg-gray-50'>
+                    {Array.from({ length: 5 }).map((_, colIndex) => (
+                      <td key={colIndex} className='px-4 py-4 border animate-pulse'></td>
+                    ))}
+                  </tr>
+                ))}
+              </Conditional>
+              <Conditional condition={!loading && booksData?.books.length === 0}>
+                <tr>
+                  <td colSpan={headers.length} className='px-4 py-2 border text-white'>
+                    No data found
+                  </td>
+                </tr>
+              </Conditional>
+              <Conditional condition={(booksData && booksData.books.length > 0 ? true : false) && !loading}>
+                {booksData?.books.map((row, rowIndex) => (
+                  <tr key={rowIndex} className='hover:bg-gray-700'>
+                    {headers.map((header, colIndex) => (
+                      <td key={colIndex} className='px-4 py-2 border'>
+                        {row[header]}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </Conditional>
+            </tbody>
+          </table>
+
+          {/* Pagination */}
+          <Conditional condition={pagination?.totalPages > 1}>
+            <div className='mt-4 flex justify-center gap-2'>
+              <button
+                onClick={() => fetchData(pagination?.page - 1)}
+                disabled={pagination?.page === 1}
+                className='px-3 py-1 border bg-blue-900 text-white rounded disabled:bg-gray-900'>
+                Previous
+              </button>
+              <span className='px-3 py-1'>
+                Page {pagination?.page} of {pagination.totalPages}
+              </span>
+              <button
+                onClick={() => fetchData(pagination?.page + 1)}
+                disabled={pagination?.page === pagination.totalPages}
+                className='px-3 py-1 border bg-blue-900 text-white rounded disabled:bg-gray-900'>
+                Next
+              </button>
+            </div>
+          </Conditional>
+        </div>
+      </div>
+    </main>
   );
 }
