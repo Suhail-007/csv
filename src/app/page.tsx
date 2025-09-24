@@ -59,6 +59,7 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress>({ processed: 0, total: 0 });
   const inputRef = useRef<null | HTMLInputElement>(null);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [isDeleteLoading, setIsDeleteLoading] = useState({
     id: '',
     isLoading: false,
@@ -94,6 +95,41 @@ export default function Home() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) {
       setFile(e.target.files[0]);
+    }
+  };
+
+  const handleDownload = async () => {
+    try {
+      setIsDownloading(true);
+      const response = await fetch('/api/download');
+
+      if (!response.ok) {
+        throw new Error('Failed to download CSV');
+      }
+
+      // Create a blob from the response
+      const blob = await response.blob();
+
+      // Create a temporary URL for the blob
+      const url = window.URL.createObjectURL(blob);
+
+      // Create a temporary link element
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `books_${new Date().toISOString().split('T')[0]}.csv`;
+
+      // Append link to body, click it, and remove it
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Clean up the temporary URL
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Download error:', err);
+      setError('Failed to download CSV');
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -221,15 +257,27 @@ export default function Home() {
       <div className='max-w-6xl mx-auto'>
         <h1 className='text-3xl font-bold mb-8'>CSV File Upload and Display</h1>
 
-        {/* Upload Section */}
+        {/* Upload and Download Section */}
         <div className='mb-8 p-4 border rounded-lg'>
-          <input ref={inputRef} type='file' accept='.csv' onChange={handleFileChange} className='mb-4' />
-          <button
-            onClick={handleUpload}
-            disabled={uploading || !file}
-            className='px-4 py-2 bg-blue-500 text-white rounded disabled:bg-gray-400'>
-            {uploading ? 'Uploading...' : 'Upload CSV'}
-          </button>
+          <div className='flex flex-wrap items-center gap-4 mb-4'>
+            <div className='flex-1'>
+              <input ref={inputRef} type='file' accept='.csv' onChange={handleFileChange} className='max-w-full' />
+            </div>
+            <div className='flex gap-2'>
+              <button
+                onClick={handleUpload}
+                disabled={uploading || !file}
+                className='px-4 py-2 bg-blue-500 text-white rounded disabled:bg-gray-400 hover:bg-blue-600'>
+                {uploading ? 'Uploading...' : 'Upload CSV'}
+              </button>
+              <button
+                onClick={handleDownload}
+                disabled={isDownloading || !booksData?.data?.length}
+                className='px-4 py-2 bg-green-500 text-white rounded disabled:bg-gray-400 hover:bg-green-600'>
+                {isDownloading ? 'Downloading...' : 'Download CSV'}
+              </button>
+            </div>
+          </div>
           {error && <p className='text-red-500 mt-2'>{error}</p>}
           {uploading && uploadProgress.total > 0 && (
             <ProgressBar progress={uploadProgress.processed} total={uploadProgress.total} />
@@ -309,9 +357,7 @@ export default function Home() {
                               <Conditional condition={isDeleteLoading.id === row._id && isDeleteLoading.isLoading}>
                                 Deleting...
                               </Conditional>
-                              <Conditional condition={isDeleteLoading.id !== row._id}>
-                                Delete
-                              </Conditional>
+                              <Conditional condition={isDeleteLoading.id !== row._id}>Delete</Conditional>
                             </button>
                           </div>
                         ) : (

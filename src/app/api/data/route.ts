@@ -35,7 +35,6 @@ export const GET = async (req: Request) => {
   }
 };
 
-
 export async function PUT(req: NextRequest) {
   try {
     await dbConnect();
